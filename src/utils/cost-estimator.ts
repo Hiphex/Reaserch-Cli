@@ -1,10 +1,16 @@
 /**
  * Cost Estimator - Estimates API costs before running research
+ * Uses dynamic pricing from OpenRouter API
  * Includes costs for: planning, sub-agents, summarizer, synthesis, and Exa searches
  */
 
 import type { Model } from '../clients/openrouter.js';
 import { DEFAULTS } from '../config.js';
+
+/**
+ * Summarizer model ID (from summarizer.ts)
+ */
+export const SUMMARIZER_MODEL_ID = 'google/gemini-2.0-flash-001';
 
 /**
  * Exa API pricing (as of Dec 2025)
@@ -21,14 +27,6 @@ export const EXA_PRICING = {
 } as const;
 
 /**
- * Summarizer model pricing (meta-llama/llama-3.1-8b-instruct)
- */
-export const SUMMARIZER_PRICING = {
-    promptPer1M: 0.055,       // $0.055 per 1M input tokens
-    completionPer1M: 0.055,   // $0.055 per 1M output tokens
-} as const;
-
-/**
  * Estimated token usage for different phases
  */
 export const TOKEN_ESTIMATES = {
@@ -41,8 +39,8 @@ export const TOKEN_ESTIMATES = {
         output: 1500,     // Analysis
     },
     summarizer: {
-        input: 3000,      // Text to summarize
-        output: 300,      // Summary
+        input: 1200,      // Text chunk to summarize
+        output: 30,       // Very short summary (~5-10 words)
     },
     synthesis: {
         input: 8000,      // All findings combined
@@ -62,12 +60,15 @@ export interface CostBreakdown {
         numSearches: number;
         numResults: number;
         numSubAgents: number;
+        numSummaries: number;
         mainModel: string;
+        summarizerModel: string;
     };
 }
 
 /**
  * Calculate cost for a model based on token usage
+ * Uses OpenRouter's per-token pricing from the model object
  */
 function calculateModelCost(
     model: Model | undefined,
@@ -76,7 +77,7 @@ function calculateModelCost(
 ): number {
     if (!model) return 0;
 
-    // OpenRouter pricing is per-token, we need to convert
+    // OpenRouter pricing is per-token
     const inputCost = inputTokens * model.pricing.prompt;
     const outputCost = outputTokens * model.pricing.completion;
 
@@ -103,19 +104,6 @@ function calculateExaCost(
     return { searchCost, contentsCost };
 }
 
-/**
- * Calculate summarizer costs (uses Llama 3.1 8B)
- */
-function calculateSummarizerCost(numSummaries: number): number {
-    const inputTokens = numSummaries * TOKEN_ESTIMATES.summarizer.input;
-    const outputTokens = numSummaries * TOKEN_ESTIMATES.summarizer.output;
-
-    return (
-        (inputTokens / 1_000_000) * SUMMARIZER_PRICING.promptPer1M +
-        (outputTokens / 1_000_000) * SUMMARIZER_PRICING.completionPer1M
-    );
-}
-
 export interface EstimateOptions {
     numSteps?: number;           // Number of research steps (default: 4)
     numFollowUps?: number;       // Expected follow-up searches (default: 2)
@@ -125,9 +113,11 @@ export interface EstimateOptions {
 
 /**
  * Estimate total research cost before execution
+ * Uses actual model pricing from OpenRouter API
  */
 export function estimateCost(
     mainModel: Model | undefined,
+    summarizerModel: Model | undefined,
     options: EstimateOptions = {}
 ): CostBreakdown {
     const numSteps = options.numSteps ?? 4;
@@ -137,25 +127,30 @@ export function estimateCost(
 
     const totalSearches = numSteps + numFollowUps;
 
-    // Planning phase cost
+    // Planning phase cost (main model)
     const planningCost = calculateModelCost(
         mainModel,
         TOKEN_ESTIMATES.planning.input,
         TOKEN_ESTIMATES.planning.output
     );
 
-    // Sub-agents cost (if using agent mode)
+    // Sub-agents cost (main model, if using agent mode)
     const subAgentsCost = numSubAgents * calculateModelCost(
         mainModel,
         TOKEN_ESTIMATES.subAgent.input,
         TOKEN_ESTIMATES.subAgent.output
     );
 
-    // Summarizer cost (one summary per source, ~3-5 per search)
-    const numSummaries = totalSearches * Math.min(resultsPerSearch, 5);
-    const summarizerCost = calculateSummarizerCost(numSummaries);
+    // Summarizer cost (Gemini 2.0 Flash, ~5 summaries max per phase)
+    // Max 5 summaries per summarizer config, used for reasoning display
+    const numSummaries = Math.min(5, totalSearches);
+    const summarizerCost = calculateModelCost(
+        summarizerModel,
+        numSummaries * TOKEN_ESTIMATES.summarizer.input,
+        numSummaries * TOKEN_ESTIMATES.summarizer.output
+    );
 
-    // Synthesis phase cost
+    // Synthesis phase cost (main model)
     const synthesisCost = calculateModelCost(
         mainModel,
         TOKEN_ESTIMATES.synthesis.input,
@@ -185,7 +180,9 @@ export function estimateCost(
             numSearches: totalSearches,
             numResults: totalSearches * resultsPerSearch,
             numSubAgents,
+            numSummaries,
             mainModel: mainModel?.id ?? 'unknown',
+            summarizerModel: summarizerModel?.id ?? SUMMARIZER_MODEL_ID,
         },
     };
 }
@@ -204,7 +201,7 @@ export function formatCostBreakdown(cost: CostBreakdown): string {
         lines.push(`├─ Sub-agents (×${cost.details.numSubAgents}): ${fmt(cost.subAgents)}`);
     }
 
-    lines.push(`├─ Summarizer (llama-3.1-8b): ${fmt(cost.summarizer)}`);
+    lines.push(`├─ Summarizer (${cost.details.summarizerModel}): ${fmt(cost.summarizer)}`);
     lines.push(`├─ Synthesis: ${fmt(cost.synthesis)}`);
     lines.push(`├─ Exa searches (×${cost.details.numSearches}): ${fmt(cost.exaSearches)}`);
     lines.push(`├─ Exa contents (${cost.details.numResults} pages): ${fmt(cost.exaContents)}`);
@@ -219,3 +216,4 @@ export function formatCostBreakdown(cost: CostBreakdown): string {
 export function formatCostSimple(cost: CostBreakdown): string {
     return `~$${cost.total.toFixed(3)} (${cost.details.numSearches} searches)`;
 }
+

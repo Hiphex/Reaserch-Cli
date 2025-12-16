@@ -179,11 +179,12 @@ program
 
             // Cost estimation (if --estimate or --dry-run)
             if (options.estimate || options.dryRun) {
-                const { estimateCost, formatCostBreakdown } = await import('./utils/cost-estimator.js');
+                const { estimateCost, formatCostBreakdown, SUMMARIZER_MODEL_ID } = await import('./utils/cost-estimator.js');
                 const models = await openRouterClient.listModels();
                 const mainModel = models.find(m => m.id === model);
+                const summarizerModel = models.find(m => m.id === SUMMARIZER_MODEL_ID);
 
-                const costEstimate = estimateCost(mainModel, {
+                const costEstimate = estimateCost(mainModel, summarizerModel, {
                     numSteps: plan.steps.length,
                     numFollowUps: config.autoFollowup ? 2 : 0,
                 });
