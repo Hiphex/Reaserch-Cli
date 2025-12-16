@@ -1,0 +1,84 @@
+{
+  "name": "deep-research-cli",
+  "version": "1.0.0",
+  "description": "A stylistic CLI tool for deep web research using Exa Search and OpenRouter",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "research": "./dist/index.js"
+  },
+  "keywords": [
+    "research",
+    "cli",
+    "ai",
+    "exa",
+    "openrouter",
+    "llm",
+    "web-search",
+    "deep-research",
+    "agent",
+    "reasoning"
+  ],
+  "author": "Deep Research CLI Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hiphex/Reaserch-Cli.git"
+  },
+  "homepage": "https://github.com/Hiphex/Reaserch-Cli#readme",
+  "bugs": {
+    "url": "https://github.com/Hiphex/Reaserch-Cli/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "start": "npm run build && node dist/index.js",
+    "dev": "tsx --watch src/index.ts",
+    "search": "npm run build && node dist/index.js search",
+    "init": "npm run build && node dist/index.js init",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "boxen": "^7.1.1",
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.3",
+    "commander": "^12.1.0",
+    "docx": "^9.5.1",
+    "dotenv": "^17.2.3",
+    "figures": "^6.0.1",
+    "gradient-string": "^2.0.2",
+    "html-to-text": "^9.0.5",
+    "inquirer": "^9.2.12",
+    "marked": "^11.1.1",
+    "marked-terminal": "^6.2.0",
+    "ora": "^8.0.1",
+    "string-width": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/gradient-string": "^1.1.5",
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.50.0",
+    "@typescript-eslint/parser": "^8.50.0",
+    "eslint": "^9.39.2",
+    "tsx": "^4.7.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.15"
+  }
+}
