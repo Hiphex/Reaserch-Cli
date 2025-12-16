@@ -7,6 +7,13 @@ import { ExaClient, type ExaSearchResult, type ExaSearchResponse } from '../clie
 import type { ResearchStep } from '../research/planner.js';
 import { envBool, envIntOrInfinity, envNonNegativeInt, envPositiveInt } from '../utils/env.js';
 
+// Sensible defaults and hard caps to prevent unbounded API calls
+// Users can override via env vars or constructor options (still clamped to hard max)
+const DEFAULT_MAX_SEARCH_ROUNDS = 5;
+const HARD_MAX_SEARCH_ROUNDS = 50;
+const DEFAULT_MAX_EXPANDED_URLS = 5;
+const HARD_MAX_EXPANDED_URLS = 50;
+
 const SUB_AGENT_MODEL = 'qwen/qwen3-235b-a22b-2507';
 
 const getSubAgentPrompt = () => `You are a focused research agent. Your job is to thoroughly research ONE specific topic and produce a detailed summary.
@@ -78,6 +85,9 @@ export class SubResearchAgent {
     private expandedTextChars: number;
     private maxTotalSourceChars: number;
 
+    // Track if user requested unlimited (before clamping) for UI display
+    private userRequestedUnlimitedRounds: boolean;
+
     constructor(
         chatClient: OpenRouterClient,
         exaClient: ExaClient,
@@ -102,15 +112,29 @@ export class SubResearchAgent {
         this.expansionCandidates = typeof options.expansionCandidates === 'number'
             ? options.expansionCandidates
             : envPositiveInt(process.env.SUBAGENT_EXPANSION_CANDIDATES, 8);
-        this.maxExpandedUrls = typeof options.maxExpandedUrls === 'number'
+        // maxExpandedUrls: user value clamped to hard limit, or default
+        const rawMaxExpanded = typeof options.maxExpandedUrls === 'number'
             ? options.maxExpandedUrls
-            : envNonNegativeInt(process.env.SUBAGENT_MAX_EXPANDED_URLS, 5);
+            : envIntOrInfinity(process.env.SUBAGENT_MAX_EXPANDED_URLS, DEFAULT_MAX_EXPANDED_URLS);
+        this.maxExpandedUrls = Math.min(
+            Math.max(0, Number.isFinite(rawMaxExpanded) ? rawMaxExpanded : HARD_MAX_EXPANDED_URLS),
+            HARD_MAX_EXPANDED_URLS
+        );
+
         this.expandSourcesByDefault = typeof options.expandSources === 'boolean'
             ? options.expandSources
             : envBool(process.env.SUBAGENT_EXPAND_SOURCES, true);
-        this.maxSearchRounds = typeof options.maxSearchRounds === 'number'
+
+        // maxSearchRounds: user value clamped to hard limit, or default
+        const rawMaxRounds = typeof options.maxSearchRounds === 'number'
             ? options.maxSearchRounds
-            : envPositiveInt(process.env.SUBAGENT_MAX_SEARCH_ROUNDS, 2);
+            : envIntOrInfinity(process.env.SUBAGENT_MAX_SEARCH_ROUNDS, DEFAULT_MAX_SEARCH_ROUNDS);
+        // Capture user's intent before clamping (for UI display)
+        this.userRequestedUnlimitedRounds = !Number.isFinite(rawMaxRounds);
+        this.maxSearchRounds = Math.min(
+            Math.max(1, Number.isFinite(rawMaxRounds) ? rawMaxRounds : HARD_MAX_SEARCH_ROUNDS),
+            HARD_MAX_SEARCH_ROUNDS
+        );
         this.sourceTextChars = typeof options.sourceTextChars === 'number'
             ? options.sourceTextChars
             : envNonNegativeInt(process.env.SUBAGENT_SOURCE_TEXT_CHARS, 2200);
@@ -168,7 +192,13 @@ export class SubResearchAgent {
             usedQueryKeys.add(key);
             queriesUsed.push(currentQuery);
 
-            reportStatus(this.maxSearchRounds > 1 ? `Searching (${round}/${this.maxSearchRounds})...` : 'Searching...');
+            // Show round number - use "unlimited" style if user requested it (even though we clamp)
+            const statusText = this.userRequestedUnlimitedRounds
+                ? `Searching (round ${round})...`
+                : this.maxSearchRounds > 1
+                    ? `Searching (${round}/${this.maxSearchRounds})...`
+                    : 'Searching...';
+            reportStatus(statusText);
             const searchResponse = await this.exaClient.search(currentQuery, {
                 numResults: this.numResults,
                 type: 'deep',

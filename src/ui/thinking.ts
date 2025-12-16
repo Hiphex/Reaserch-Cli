@@ -3,10 +3,7 @@
  */
 
 import { colors, icons } from './theme.js';
-import { OpenRouterClient } from '../clients/openrouter.js';
-
-// Fast summarization model for reasoning updates
-const SUMMARIZER_MODEL = 'meta-llama/llama-3.1-8b-instruct';
+import type { OpenRouterClient } from '../clients/openrouter.js';
 
 export interface ThinkingDisplayOptions {
     showFullReasoning?: boolean;

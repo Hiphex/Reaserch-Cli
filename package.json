@@ -1,6 +1,6 @@
 {
   "name": "deep-research-cli",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A stylistic CLI tool for deep web research using Exa Search and OpenRouter",
   "type": "module",
   "main": "dist/index.js",
@@ -79,6 +79,7 @@
     "eslint": "^9.39.2",
     "tsx": "^4.7.0",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.50.0",
     "vitest": "^4.0.15"
   }
 }
