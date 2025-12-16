@@ -106,6 +106,8 @@ program
     .option('--no-stream', 'Disable streaming output')
     .option('--ui <mode>', 'UI mode: minimal | fancy | plain')
     .option('--render <mode>', 'Report rendering when not streaming: terminal | raw')
+    .option('--dry-run', 'Show research plan and cost estimate without executing')
+    .option('--estimate', 'Show detailed cost estimate before proceeding')
     .action(async (
         query: string,
         options: {
@@ -115,6 +117,8 @@ program
             stream?: boolean;
             ui?: string;
             render?: string;
+            dryRun?: boolean;
+            estimate?: boolean;
         }
     ) => {
         try {
@@ -172,6 +176,42 @@ program
             planSpinner.succeed(colors.success('Research plan created'));
 
             showResearchPlan(plan);
+
+            // Cost estimation (if --estimate or --dry-run)
+            if (options.estimate || options.dryRun) {
+                const { estimateCost, formatCostBreakdown } = await import('./utils/cost-estimator.js');
+                const models = await openRouterClient.listModels();
+                const mainModel = models.find(m => m.id === model);
+
+                const costEstimate = estimateCost(mainModel, {
+                    numSteps: plan.steps.length,
+                    numFollowUps: config.autoFollowup ? 2 : 0,
+                });
+
+                console.log();
+                console.log(colors.primary('Cost Estimate'));
+                console.log(colors.muted(formatCostBreakdown(costEstimate)));
+
+                if (options.dryRun) {
+                    console.log();
+                    console.log(colors.muted('Dry run complete. No searches executed.'));
+                    return;
+                }
+
+                // Ask for confirmation if estimate is shown
+                const inquirer = (await import('inquirer')).default;
+                const { proceed } = await inquirer.prompt([{
+                    type: 'confirm',
+                    name: 'proceed',
+                    message: 'Proceed with research?',
+                    default: true,
+                }]);
+
+                if (!proceed) {
+                    console.log(colors.muted('Research cancelled.'));
+                    return;
+                }
+            }
 
             // Phase 2: Execution (batch parallel searches)
             console.log();

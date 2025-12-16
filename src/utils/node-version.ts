@@ -3,7 +3,7 @@
  * Ensures the CLI runs on a supported Node.js version
  */
 
-const MIN_NODE_VERSION = 18;
+const MIN_NODE_VERSION = 22;
 
 /**
  * Check if the current Node.js version meets minimum requirements.
