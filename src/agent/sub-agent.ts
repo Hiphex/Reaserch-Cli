@@ -185,7 +185,7 @@ export class SubResearchAgent {
         };
 
         // 1. One or more searches (sub-agent can stop early)
-        let currentQuery = step.searchQuery;
+        let currentQuery = step.searchQuery || step.question;
         for (let round = 1; round <= this.maxSearchRounds; round++) {
             const key = normalizeQueryKey(currentQuery);
             if (!key || usedQueryKeys.has(key)) break;
