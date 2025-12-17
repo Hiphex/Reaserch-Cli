@@ -14,7 +14,7 @@ import { Command } from 'commander';
 import { ensureConfig, loadConfig, validateConfig, writeEnvVars, DEFAULTS } from './config.js';
 import { searchCommand } from './commands/search.js';
 import { OpenRouterClient } from './clients/openrouter.js';
-import { colors } from './ui/theme.js';
+import { colors as themeColors } from './ui/theme.js';
 import {
     showError,
     createSpinner,
@@ -25,12 +25,12 @@ import packageJson from '../package.json' with { type: 'json' };
 
 // Graceful shutdown handling
 process.on('SIGINT', () => {
-    console.log('\n' + colors.muted('Interrupted. Goodbye!'));
+    console.log('\n' + themeColors.muted('Interrupted. Goodbye!'));
     process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-    console.log('\n' + colors.muted('Terminated. Goodbye!'));
+    console.log('\n' + themeColors.muted('Terminated. Goodbye!'));
     process.exit(0);
 });
 
@@ -43,10 +43,10 @@ function maybeShowSetupIntro(errors: string[]): void {
     if (!canPrompt || errors.length === 0) return;
 
     console.log();
-    console.log(colors.primary('Quick setup'));
-    console.log(colors.muted('Paste your API keys (they will be saved to .env).'));
-    console.log(colors.muted(`Missing: ${errors.map(e => e.replace(' is not set', '')).join(', ')}`));
-    console.log(colors.muted('Tip: run `research init` anytime to change defaults.'));
+    console.log(themeColors.primary('Quick setup'));
+    console.log(themeColors.muted('Paste your API keys (they will be saved to .env).'));
+    console.log(themeColors.muted(`Missing: ${errors.map(e => e.replace(' is not set', '')).join(', ')}`));
+    console.log(themeColors.muted('Tip: run `research init` anytime to change defaults.'));
     console.log();
 }
 
@@ -66,8 +66,8 @@ program
             process.env.UI_MODE = preflight.uiMode;
 
             console.log();
-            console.log(colors.primary('Setup'));
-            console.log(colors.muted('This will save your settings to .env in this folder.'));
+            console.log(themeColors.primary('Setup'));
+            console.log(themeColors.muted('This will save your settings to .env in this folder.'));
             console.log();
 
             await ensureConfig(
@@ -78,7 +78,7 @@ program
                     preferencesMode: options.advanced ? 'advanced' : 'basic',
                 }
             );
-            console.log(colors.success('Saved configuration to .env'));
+            console.log(themeColors.success('Saved configuration to .env'));
         } catch (error) {
             showError(error instanceof Error ? error.message : String(error));
             process.exit(1);
@@ -159,7 +159,7 @@ program
             const { selectModelQuick } = await import('./ui/model-selector.js');
             const selected = await selectModelQuick(models, { currentModel: config.defaultModel, showDetails: true });
             await writeEnvVars({ DEFAULT_MODEL: selected.id });
-            console.log(colors.success(`Saved DEFAULT_MODEL=${selected.id}`));
+            console.log(themeColors.success(`Saved DEFAULT_MODEL=${selected.id}`));
             return;
         }
 
@@ -180,8 +180,8 @@ program
             return;
         }
 
-        console.log(`\n${colors.primary('Available Models')} (${models.length} total)`);
-        if (filter) console.log(colors.muted(`Filter: ${filter} (${filtered.length} matched)`));
+        console.log(`\n${themeColors.primary('Available Models')} (${models.length} total)`);
+        if (filter) console.log(themeColors.muted(`Filter: ${filter} (${filtered.length} matched)`));
         console.log();
 
         visible.forEach((m) => {
@@ -190,15 +190,15 @@ program
             const priceIn = (m.pricing.prompt * 1_000_000).toFixed(2);
             const priceOut = (m.pricing.completion * 1_000_000).toFixed(2);
 
-            console.log(`  ${colors.secondary(m.id)}`);
-            console.log(colors.muted(`    Context: ${ctx} | Max out: ${maxOut} | Price: $${priceIn}/$${priceOut} per 1M tokens`));
+            console.log(`  ${themeColors.secondary(m.id)}`);
+            console.log(themeColors.muted(`    Context: ${ctx} | Max out: ${maxOut} | Price: $${priceIn}/$${priceOut} per 1M tokens`));
 
             if (options.details) {
                 if (m.supportedParameters?.length) {
-                    console.log(colors.muted(`    Supported: ${m.supportedParameters.join(', ')}`));
+                    console.log(themeColors.muted(`    Supported: ${m.supportedParameters.join(', ')}`));
                 }
                 if (m.description) {
-                    console.log(colors.muted(`    ${m.description}`));
+                    console.log(themeColors.muted(`    ${m.description}`));
                 }
             }
         });
