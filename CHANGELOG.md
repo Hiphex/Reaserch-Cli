@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2025-12-17
+
+### Added
+- Cost estimation flags (`--estimate`, `--dry-run`) to preview research costs using live OpenRouter pricing and Exa search assumptions before executing searches.
+- Node.js version preflight to enforce Node 22+ with a clear upgrade prompt.
+- Configurable research guardrails for sub-agents (search rounds, expanded URLs, and source size caps) with sensible defaults and hard maximums.
+- Optional throttling controls for reasoning summarization without hardcoded limits unless explicitly set.
+
+### Fixed
+- Cost estimates now rely on dynamic OpenRouter model pricing instead of static rates for improved accuracy.
+
 ## [1.0.0] - 2024-12-15
 
 ### Added
