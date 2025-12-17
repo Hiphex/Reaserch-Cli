@@ -7,6 +7,7 @@ import { OpenRouterClient, type Message } from './openrouter.js';
 
 // Fast, cheap model for summarization
 export const SUMMARIZER_MODEL = 'google/gemini-2.0-flash-001';
+export const SUMMARIZER_MODEL_ID = SUMMARIZER_MODEL;
 
 const SUMMARIZE_PROMPT = `You are a concise summarizer. Given a snippet of an AI's internal reasoning/thinking, summarize what it's doing RIGHT NOW in 5-10 words maximum. Be specific.
 

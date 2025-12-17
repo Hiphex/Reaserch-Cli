@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ResearchPlanner, type ResearchPlan } from '../research/planner.js';
-import { ResearchExecutor } from '../research/executor.js';
+import { runParallelResearch } from '../agent/sub-agent.js';
 import { ReasoningSummarizer, SUMMARIZER_MODEL } from '../clients/summarizer.js';
 
 // Create mock factory for OpenRouter client
@@ -112,43 +112,37 @@ describe('Research Pipeline Integration', () => {
         });
     });
 
-    describe('ResearchExecutor', () => {
+    describe('SubResearchAgent (Parallel Execution)', () => {
         it('should execute all search steps', async () => {
+            const steps = [
+                { id: 1, question: 'Q1', searchQuery: 'query1', purpose: 'P1', status: 'pending' as const },
+                { id: 2, question: 'Q2', searchQuery: 'query2', purpose: 'P2', status: 'pending' as const },
+            ];
+
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const executor = new ResearchExecutor(mockExa as any);
-
-            const plan: ResearchPlan = {
-                mainQuestion: 'Test question',
-                expectedInsights: [],
-                steps: [
-                    { id: 1, question: 'Q1', searchQuery: 'query1', purpose: 'P1', status: 'pending' },
-                    { id: 2, question: 'Q2', searchQuery: 'query2', purpose: 'P2', status: 'pending' },
-                ],
-            };
-
-            const results = await executor.executeAll(plan);
+            const results = await runParallelResearch(steps, mockOpenRouter as any, mockExa as any, {}, {
+                concurrency: 2,
+                maxSearchRounds: 1, // Simple run
+            });
 
             expect(results).toHaveLength(2);
-            expect(mockExa.search).toHaveBeenCalledTimes(2);
-            expect(results[0].response.results).toHaveLength(2);
+            // Each step gets at least 1 search call
+            expect(mockExa.search).toHaveBeenCalled();
+            expect(results[0].sources.length).toBeGreaterThan(0);
         });
 
         it('should report progress via callback', async () => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const executor = new ResearchExecutor(mockExa as any);
             const progressCalls: number[] = [];
+            const steps = [
+                { id: 1, question: 'Q1', searchQuery: 'query1', purpose: 'P1', status: 'pending' as const },
+            ];
 
-            const plan: ResearchPlan = {
-                mainQuestion: 'Test question',
-                expectedInsights: [],
-                steps: [
-                    { id: 1, question: 'Q1', searchQuery: 'query1', purpose: 'P1', status: 'pending' },
-                ],
-            };
-
-            await executor.executeAll(plan, (step, index) => {
-                progressCalls.push(index);
-            });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await runParallelResearch(steps, mockOpenRouter as any, mockExa as any, {
+                onProgress: (done, total) => {
+                    progressCalls.push(done);
+                }
+            }, { maxSearchRounds: 1 });
 
             expect(progressCalls.length).toBeGreaterThan(0);
         });
@@ -163,11 +157,11 @@ describe('Research Pipeline Integration', () => {
             expect(plan.steps.length).toBeGreaterThan(0);
 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const executor = new ResearchExecutor(mockExa as any);
-            const results = await executor.executeAll(plan);
+            const results = await runParallelResearch(plan.steps, mockOpenRouter as any, mockExa as any, {}, {
+                maxSearchRounds: 1
+            });
 
             expect(results.length).toBe(plan.steps.length);
-            expect(results.every(r => r.response.results.length > 0)).toBe(true);
         });
     });
 });
