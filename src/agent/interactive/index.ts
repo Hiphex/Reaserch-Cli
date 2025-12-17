@@ -17,6 +17,7 @@ import {
     showError,
     showResearchPlan,
     showSynthesisHeader,
+    showComplete,
 } from '../../ui/components.js';
 import { exportReport, formatChoices, getExtension, type ExportFormat } from '../../export/formats.js';
 import { runParallelResearch, type SubAgentReport } from '../sub-agent.js';
@@ -25,6 +26,8 @@ import { envBool, envIntOrInfinity, envNonNegativeInt, envPositiveInt } from '..
 import { AgentState, ConversationTurn, ResearchResult } from './state.js';
 import { renderBox, renderInfoBox, visibleWidth, wrapText } from './ui.js';
 import { getBoxInnerWidth } from '../../ui/theme.js';
+import { estimateCost, formatCostBreakdown, SUMMARIZER_MODEL_ID } from '../../utils/cost-estimator.js';
+import { writeFile } from 'fs/promises';
 
 export class DeepResearchAgent {
     private responsesClient: OpenRouterResponsesClient;
@@ -887,7 +890,7 @@ export class DeepResearchAgent {
         if (wasSpinning) spinner.start();
     }
 
-    private async runDeepReport(query: string): Promise<void> {
+    public async runDeepReport(query: string, options: { dryRun?: boolean; output?: string } = {}): Promise<void> {
         this.lastQuery = query;
         const updated = await ensureConfig({ exa: true, openrouter: true });
 
@@ -933,6 +936,25 @@ export class DeepResearchAgent {
         console.log(`${colors.success('✓')} Plan ready (${plan.steps.length} research steps)`);
 
         showResearchPlan(plan);
+
+        // Cost estimation (if dry-run or requested via interactive command in future)
+        if (options.dryRun) {
+            const models = await this.chatClient.listModels();
+            const mainModel = models.find(m => m.id === this.model);
+            const summarizerModel = models.find(m => m.id === SUMMARIZER_MODEL_ID);
+
+            const costEstimate = estimateCost(mainModel, summarizerModel, {
+                numSteps: plan.steps.length,
+                numFollowUps: this.config.autoFollowup ? 2 : 0, // estimate for a couple rounds
+            });
+
+            console.log();
+            console.log(colors.primary('Cost Estimate'));
+            console.log(colors.muted(formatCostBreakdown(costEstimate)));
+            console.log();
+            console.log(colors.muted('Dry run complete. No searches executed.'));
+            return;
+        }
 
         // Phase 2: Parallel sub-agent research with in-place status updates
         console.log();
@@ -1023,7 +1045,7 @@ export class DeepResearchAgent {
             if (key) executedQueries.add(key);
         });
         let additionalRounds = 0;
-        const maxAdditionalRounds = envIntOrInfinity(process.env.AGENT_MAX_ADDITIONAL_ROUNDS, 4);
+        const maxAdditionalRounds = this.config.maxFollowupSteps;
 
         const boxWidth = getBoxInnerWidth();
 
@@ -1166,19 +1188,19 @@ export class DeepResearchAgent {
         // Build context from all reports (including additional research)
         const synthesisContext = this.buildSynthesisContext(plan.mainQuestion, allReports);
 
+        const synthMessages = [
+            { role: 'system' as const, content: this.getSynthesisPrompt() },
+            { role: 'user' as const, content: synthesisContext },
+        ];
+
         if (shouldStream) {
-            console.log();
-            console.log(`${colors.muted('✍️  Writing report...')}`);
-
-            const synthMessages = [
-                { role: 'system' as const, content: this.getSynthesisPrompt() },
-                { role: 'user' as const, content: synthesisContext },
-            ];
-
-            for await (const event of this.chatClient.chatStreamWithReasoning(this.model, synthMessages, {
+            // Stream the synthesis
+            const result = await this.chatClient.chatStreamWithReasoning(this.model, synthMessages, {
                 ...modelOptions,
                 includeReasoning: true,
-            })) {
+            });
+
+            for await (const event of result) {
                 if (event.type === 'reasoning') {
                     const summary = await summarizer.addReasoning(event.text);
                     if (summary) {
@@ -1199,24 +1221,27 @@ export class DeepResearchAgent {
                     report += event.text;
                 }
             }
-
-            if (!report.endsWith('\n')) process.stdout.write('\n');
+            // Add newline after stream
+            console.log();
         } else {
-            const synthSpinner = createSpinner('Writing report (LLM)...');
+            const synthSpinner = createSpinner('Generating report...');
             synthSpinner.start();
-
-            const response = await this.chatClient.chat(this.model, [
-                { role: 'system', content: this.getSynthesisPrompt() },
-                { role: 'user', content: synthesisContext },
-            ], { ...modelOptions });
-
+            const response = await this.chatClient.chat(this.model, synthMessages, modelOptions);
             report = response.choices[0]?.message?.content || '';
             synthSpinner.stop();
-
-            const shouldRender = this.config.renderMarkdown && process.env.RENDER_MARKDOWN !== '0';
-            console.log(shouldRender ? renderMarkdown(report) : report);
+            console.log(renderMarkdown(report));
         }
 
+        // Save to file if requested
+        if (options.output) {
+            await writeFile(options.output, report, 'utf-8');
+            showComplete(options.output);
+        } else {
+            // only show "Complete" if running in one-shot mode, otherwise we return to prompt
+            if (options.output) showComplete(); // handled above
+        }
+
+        this.lastReport = { topic: query, markdown: report };
         // Collect all sources (including additional research)
         const sources = [
             ...new Set(

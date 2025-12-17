@@ -12,7 +12,8 @@ checkNodeVersion();
 
 import { Command } from 'commander';
 import { ensureConfig, loadConfig, validateConfig, writeEnvVars, DEFAULTS } from './config.js';
-import { searchCommand } from './commands/search.js';
+
+// search command merged into main agent flow
 import { OpenRouterClient } from './clients/openrouter.js';
 import { colors as themeColors } from './ui/theme.js';
 import {
@@ -85,17 +86,28 @@ program
         }
     });
 
-program.addCommand(searchCommand);
-
 program
     .command('agent', { isDefault: true })
-    .description('Start the interactive deep-research assistant')
+    .description('Start the deep-research assistant')
+    .argument('[query]', 'Initial research query')
     .alias('chat')
+    .alias('search')
     .option('-m, --model <model>', 'Model to use (default: moonshotai/kimi-k2-thinking)')
     .option('--ui <mode>', 'UI mode: minimal | fancy | plain')
     .option('--render <mode>', 'Report rendering (non-stream): terminal | raw')
     .option('--reasoning <mode>', 'Reasoning output: auto | on | off')
-    .action(async (options: { model?: string; ui?: string; render?: string; reasoning?: string }) => {
+    .option('--dry-run', 'Show research plan and cost estimate without executing')
+    .option('--estimate', 'Show detailed cost estimate before proceeding')
+    .option('-o, --output <file>', 'Save report to file')
+    .action(async (query: string | undefined, options: {
+        model?: string;
+        ui?: string;
+        render?: string;
+        reasoning?: string;
+        dryRun?: boolean;
+        estimate?: boolean;
+        output?: string;
+    }) => {
         try {
             const preflight = loadConfig();
             const earlyUiMode = options.ui || preflight.uiMode;
@@ -124,7 +136,19 @@ program
 
             const { DeepResearchAgent } = await import('./agent/interactive/index.js');
             const agent = new DeepResearchAgent(config, model);
-            await agent.start();
+
+            // If query is provided, run in "one-shot" mode (mimic search command)
+            if (query) {
+                // If interactive flag was passed (TODO), we could pass it to start(query).
+                // For now, we assume arg = one-shot execution.
+                await agent.runDeepReport(query, {
+                    dryRun: options.dryRun || options.estimate,
+                    output: options.output,
+                });
+            } else {
+                // Interactive mode
+                await agent.start();
+            }
 
         } catch (error) {
             showError(error instanceof Error ? error.message : String(error));

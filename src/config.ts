@@ -26,6 +26,7 @@ export const DEFAULTS = {
     streamOutput: true,
     exaNumResults: 8,
     exaFollowupNumResults: 5,
+    maxFollowupSteps: 20,
 } as const;
 
 export interface Config {
@@ -45,7 +46,7 @@ export interface Config {
     showReasoning: boolean;
     showToolCalls: boolean;
     autoFollowup: boolean;
-    maxFollowupSteps?: number;
+    maxFollowupSteps: number;
     streamOutput: boolean;
     exaNumResults: number;
     exaFollowupNumResults: number;
@@ -110,7 +111,7 @@ export function loadConfig(): Config {
     const showReasoning = envBool(process.env.SHOW_REASONING, DEFAULTS.showReasoning);
     const showToolCalls = envBool(process.env.SHOW_TOOL_CALLS, DEFAULTS.showToolCalls);
     const autoFollowup = envBool(process.env.AUTO_FOLLOWUP, DEFAULTS.autoFollowup);
-    const maxFollowupSteps = envOptionalInt(process.env.MAX_FOLLOWUP_STEPS);
+    const maxFollowupSteps = envPositiveInt(process.env.MAX_FOLLOWUP_STEPS, DEFAULTS.maxFollowupSteps);
     const streamOutput = envBool(process.env.STREAM_OUTPUT, DEFAULTS.streamOutput);
     const exaNumResults = envPositiveInt(process.env.EXA_NUM_RESULTS, DEFAULTS.exaNumResults);
     const exaFollowupNumResults = envPositiveInt(process.env.EXA_FOLLOWUP_NUM_RESULTS, DEFAULTS.exaFollowupNumResults);
