@@ -177,7 +177,7 @@ export class DeepResearchAgent {
         if (wasSpinning) spinner.start();
     }
 
-    public async runDeepReport(query: string, options: { dryRun?: boolean; output?: string } = {}): Promise<void> {
+    public async runDeepReport(query: string, options: { dryRun?: boolean; output?: string; skipPlanReview?: boolean } = {}): Promise<void> {
         this.lastQuery = query;
         const updated = await ensureConfig({ exa: true, openrouter: true });
         this.config = updated;
@@ -191,8 +191,29 @@ export class DeepResearchAgent {
         console.log();
         console.log(`${colors.muted('📋 Planning research...')}`);
 
+        // Phase 1: Create the research plan
+        const { plan, summarizer } = await this.coordinator.createResearchPlan(query, {
+            onReasoning: (text) => {
+                console.log(`  ${colors.muted('💭')} ${colors.muted(text)}`);
+            },
+            onStatusUpdate: (status) => {
+                console.log(colors.muted(status));
+            },
+        });
+
+        // Interactive plan review (unless skipped via options)
+        if (!options.skipPlanReview && !options.dryRun) {
+            const reviewedPlan = await this.reviewResearchPlan(plan);
+            if (reviewedPlan === null) {
+                // User aborted
+                console.log(colors.muted('Research aborted.'));
+                return;
+            }
+            // Use reviewed plan (may have edited steps)
+            plan.steps = reviewedPlan.steps as typeof plan.steps;
+        }
+
         // State for UI management
-        let agentStates: AgentState[] = [];
         let lastRender = '';
 
         const updateBoxWithCursor = (title: string, states: AgentState[]) => {
@@ -207,69 +228,26 @@ export class DeepResearchAgent {
             }
         };
 
-        const result = await this.coordinator.runDeepResearch(query, {
+        // Phase 2: Execute the (possibly edited) plan
+        const result = await this.coordinator.executeResearchPlan(plan, {
             onReasoning: (text) => {
-                // In phase 1 calling planner, we get reasoning
-                // We could print it if we want
-                // Original printed summaries
                 console.log(`  ${colors.muted('💭')} ${colors.muted(text)}`);
             },
             onStatusUpdate: (status) => {
                 console.log(colors.muted(status));
             },
             onSubAgentStatus: (statuses) => {
-                // We need to map these statuses to our agentStates
-                // Note: Coordinator passes us the statuses array
-                // We need to know if we are in initial phase or additional phase to update the right box.
-                // But Coordinator abstracts the loop.
-                // This is where "Stateless Coordinator" vs "Rich UI" conflicts.
-                // Ideally Coordinator should emit events that include "Phase" or "Step ID".
-
-                // For now, let's blindly support a single box update or assume statuses are cumulative?
-                // Actually runParallelResearch in Coordinator returns statuses for *that batch*.
-                // And `agentStates` needs to track ALL steps.
-
-                // If the coordinator passes `statuses` which contains `index`, we can update our local state.
-                // However, we need to know the Total list of steps to init the box.
-                // The coordinator does NOT expose the Plan explicitly before execution in `runDeepResearch`.
-                // Refactoring to get the plan first would be better, OR we trust `statuses` to have enough info?
-                // `statuses` has `index` which is 0-based for the batch.
-
-                // Problem: We want the nice cursor-based box UI.
-                // But we don't know the steps until Coordinator tells us?
-                // Or we split `runDeepResearch` into granular calls in `index.ts`?
-                // If `index.ts` calls `planner.createPlan`, then `coordinator.execute(plan)`, then `coordinator.synthesize(...)`.
-                // This seems better than a monolithic `runDeepResearch` in Coordinator if we want rich UI control.
-
-                // BUT the task was to refactor logic into Coordinator.
-                // Let's settle for a simplified UI update for now, or...
-
-                // Actually checking how `runParallelResearch` works:
-                // It calls `onStatusUpdate` with `AgentStatus[]`.
-                // It initializes `states` inside `runParallelResearch` for the batch.
-
-                // If I want to maintain the "Rich UI", `runDeepResearch` inside coordinator is maybe too high level?
-                // Or `runDeepResearch` should invoke callbacks with richer context.
-
-                // Let's implement a simplified UI for now where we just print updates, or try to reconstruct the box.
-                // If `statuses` is passed, we can render the box for THAT batch.
-
-                // Let's try to render a box for whatever batch is running.
                 const batchStates: AgentState[] = statuses.map(s => ({
-                    question: s.question || `Step ${s.index + 1}`, // status usually doesn't carry question text unless we added it?
+                    question: s.question || `Step ${s.index + 1}`,
                     status: s.status,
                     sources: s.sources,
                     complete: s.complete,
                     failed: s.failed
                 }));
-                // We need the question text. `AgentStatus` has `question: string`?
-                // Let's check `sub-agent.ts`.
-                // Yes, `AgentStatus` has `question`.
-
                 updateBoxWithCursor('Research Progress', batchStates);
             },
             onStreamOutput: (text) => process.stdout.write(text),
-        }, { dryRun: options.dryRun });
+        }, { dryRun: options.dryRun, summarizer });
 
         if (options.dryRun && result.costEstimate) {
             console.log();
@@ -280,10 +258,6 @@ export class DeepResearchAgent {
             return;
         }
 
-        // Final output handling
-        // ... (sources, saving to lastTurn etc)
-
-        // Save to file if requested
         // Save to file if requested
         if (options.output) {
             await writeFile(options.output, result.markdown, 'utf-8');
@@ -312,6 +286,147 @@ export class DeepResearchAgent {
             sources.slice(0, 10).forEach((url, i) => console.log(colors.muted(`  ${i + 1}. ${url}`)));
             if (sources.length > 10) console.log(colors.muted(`  +${sources.length - 10} more`));
         }
+    }
+
+    /**
+     * Interactive plan review - lets user confirm, edit, or abort the research plan
+     */
+    private async reviewResearchPlan(plan: { mainQuestion: string; steps: Array<{ id: number; question: string; searchQuery?: string; purpose?: string; status: string }> }): Promise<typeof plan | null> {
+        while (true) {
+            // Display the plan
+            console.log();
+            console.log(colors.primary('Research Plan'));
+            console.log(colors.muted(divider()));
+            plan.steps.forEach((step, i) => {
+                console.log(`  ${colors.secondary(`${i + 1}.`)} ${step.question}`);
+                if (step.searchQuery && step.searchQuery !== step.question) {
+                    console.log(colors.muted(`     Query: "${step.searchQuery}"`));
+                }
+            });
+            console.log(colors.muted(divider()));
+
+            const { action } = await inquirer.prompt([
+                {
+                    type: 'list',
+                    name: 'action',
+                    message: 'Review research plan:',
+                    choices: [
+                        { name: `${icons.complete} Confirm and execute`, value: 'confirm' },
+                        { name: `${icons.arrow} Edit steps`, value: 'edit' },
+                        { name: `${icons.error} Abort`, value: 'abort' },
+                    ],
+                },
+            ]);
+
+            if (action === 'confirm') {
+                return plan;
+            }
+
+            if (action === 'abort') {
+                return null;
+            }
+
+            if (action === 'edit') {
+                await this.editPlanSteps(plan);
+            }
+        }
+    }
+
+    /**
+     * Edit individual steps in the research plan
+     */
+    private async editPlanSteps(plan: { steps: Array<{ id: number; question: string; searchQuery?: string; purpose?: string; status: string }> }): Promise<void> {
+        const stepChoices = plan.steps.map((step, i) => ({
+            name: `${i + 1}. ${step.question.slice(0, 50)}${step.question.length > 50 ? '...' : ''}`,
+            value: i,
+        }));
+        stepChoices.push({ name: `${icons.arrow} Add new step`, value: -1 });
+        stepChoices.push({ name: `${icons.complete} Done editing`, value: -2 });
+
+        const { stepIndex } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'stepIndex',
+                message: 'Select step to edit:',
+                choices: stepChoices,
+            },
+        ]);
+
+        if (stepIndex === -2) {
+            return; // Done editing
+        }
+
+        if (stepIndex === -1) {
+            // Add new step
+            const { question, searchQuery } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'question',
+                    message: 'Research question:',
+                    validate: (input: string) => input.trim().length > 0 || 'Required',
+                },
+                {
+                    type: 'input',
+                    name: 'searchQuery',
+                    message: 'Search query (optional, defaults to question):',
+                },
+            ]);
+
+            plan.steps.push({
+                id: plan.steps.length + 1,
+                question: question.trim(),
+                searchQuery: searchQuery.trim() || question.trim(),
+                purpose: 'User-added research step',
+                status: 'pending' as const,
+            });
+            return this.editPlanSteps(plan); // Continue editing
+        }
+
+        // Edit existing step
+        const step = plan.steps[stepIndex];
+        const { editAction } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'editAction',
+                message: `Step ${stepIndex + 1}: ${step.question.slice(0, 40)}...`,
+                choices: [
+                    { name: 'Edit question', value: 'question' },
+                    { name: 'Edit search query', value: 'query' },
+                    { name: `${icons.error} Delete step`, value: 'delete' },
+                    { name: 'Back', value: 'back' },
+                ],
+            },
+        ]);
+
+        if (editAction === 'delete') {
+            plan.steps.splice(stepIndex, 1);
+            // Re-number remaining steps
+            plan.steps.forEach((s, i) => { s.id = i + 1; });
+        } else if (editAction === 'question') {
+            const { newQuestion } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'newQuestion',
+                    message: 'New question:',
+                    default: step.question,
+                    validate: (input: string) => input.trim().length > 0 || 'Required',
+                },
+            ]);
+            step.question = newQuestion.trim();
+        } else if (editAction === 'query') {
+            const { newQuery } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'newQuery',
+                    message: 'New search query:',
+                    default: step.searchQuery || step.question,
+                },
+            ]);
+            step.searchQuery = newQuery.trim() || step.question;
+        }
+
+        // Continue editing
+        return this.editPlanSteps(plan);
     }
 
     private showHelp(): void {

@@ -13,6 +13,8 @@ const DEFAULT_MAX_SEARCH_ROUNDS = 5;
 const HARD_MAX_SEARCH_ROUNDS = 50;
 const DEFAULT_MAX_EXPANDED_URLS = 5;
 const HARD_MAX_EXPANDED_URLS = 50;
+const DEFAULT_MAX_RECURSION_DEPTH = 2;
+const HARD_MAX_RECURSION_DEPTH = 5;
 
 const SUB_AGENT_MODEL = 'qwen/qwen3-235b-a22b-2507';
 
@@ -63,6 +65,20 @@ Rules:
 - Prefer specific keywords, entities, datasets, reports, or “site:”/filetype hints only if helpful.
 - Keep it concise (<= 18 words).`;
 
+const SUB_TOPIC_IDENTIFICATION_PROMPT = `You are analyzing research findings to determine if any sub-topics require deeper, separate investigation.
+
+Given the research question and current findings, identify 1-2 complex sub-topics that would significantly benefit from dedicated research.
+
+Conditions for suggesting sub-topics:
+- The sub-topic is complex enough to warrant its own research thread
+- Current sources mention it but don't provide sufficient depth
+- Understanding this sub-topic is critical to answering the main question
+
+Return ONLY JSON:
+{"subTopics": [{"question": "focused research question", "searchQuery": "optimized search query", "reason": "why this needs deeper research"}]}
+
+If no sub-topics need deeper research, return: {"subTopics": []}`;
+
 export interface SubAgentReport {
     step: ResearchStep;
     summary: string;
@@ -84,6 +100,8 @@ export class SubResearchAgent {
     private sourceTextChars: number;
     private expandedTextChars: number;
     private maxTotalSourceChars: number;
+    private currentDepth: number;
+    private maxRecursionDepth: number;
 
     // Track if user requested unlimited (before clamping) for UI display
     private userRequestedUnlimitedRounds: boolean;
@@ -102,6 +120,8 @@ export class SubResearchAgent {
             sourceTextChars?: number;
             expandedTextChars?: number;
             maxTotalSourceChars?: number;
+            depth?: number;
+            maxRecursionDepth?: number;
         } = {}
     ) {
         this.chatClient = chatClient;
@@ -144,6 +164,13 @@ export class SubResearchAgent {
         this.maxTotalSourceChars = typeof options.maxTotalSourceChars === 'number'
             ? options.maxTotalSourceChars
             : envIntOrInfinity(process.env.SUBAGENT_MAX_TOTAL_SOURCE_CHARS, 65_000);
+
+        // Recursion depth control (0 disables recursive research)
+        this.currentDepth = typeof options.depth === 'number' ? options.depth : 0;
+        const rawMaxDepth = typeof options.maxRecursionDepth === 'number'
+            ? options.maxRecursionDepth
+            : envNonNegativeInt(process.env.SUBAGENT_MAX_RECURSION_DEPTH, DEFAULT_MAX_RECURSION_DEPTH);
+        this.maxRecursionDepth = Math.min(Math.max(0, rawMaxDepth), HARD_MAX_RECURSION_DEPTH);
     }
 
     /**
@@ -250,11 +277,64 @@ export class SubResearchAgent {
 
         const allSources = mergedForAnalysis;
         reportStatus(`Analyzing ${allSources.length} sources...`);
-        const summary = await this.analyzeSources(step, allSources, expandedUrlSet);
+        let summary = await this.analyzeSources(step, allSources, expandedUrlSet);
 
         // 4. Extract key insights
         reportStatus('Extracting insights...');
         const keyInsights = this.extractKeyInsights(summary);
+
+        // 5. Recursive research for complex sub-topics (if depth allows)
+        if (this.currentDepth < this.maxRecursionDepth) {
+            reportStatus('Checking for complex sub-topics...');
+            const subTopics = await this.identifySubTopics(step, summary, searchResults);
+
+            if (subTopics.length > 0) {
+                reportStatus(`Found ${subTopics.length} sub-topic(s) requiring deeper research...`);
+
+                for (const subTopic of subTopics) {
+                    reportStatus(`[Child] Researching: ${subTopic.question.slice(0, 40)}...`);
+
+                    // Create a child agent with incremented depth
+                    const childAgent = new SubResearchAgent(this.chatClient, this.exaClient, {
+                        model: this.model,
+                        chatOptions: this.options,
+                        numResults: this.numResults,
+                        expansionCandidates: this.expansionCandidates,
+                        maxExpandedUrls: this.maxExpandedUrls,
+                        expandSources: this.expandSourcesByDefault,
+                        maxSearchRounds: Math.max(1, this.maxSearchRounds - 1), // Fewer rounds for child
+                        sourceTextChars: this.sourceTextChars,
+                        expandedTextChars: this.expandedTextChars,
+                        maxTotalSourceChars: this.maxTotalSourceChars,
+                        depth: this.currentDepth + 1,
+                        maxRecursionDepth: this.maxRecursionDepth,
+                    });
+
+                    const childStep: ResearchStep = {
+                        id: step.id * 100 + subTopics.indexOf(subTopic) + 1,
+                        question: subTopic.question,
+                        searchQuery: subTopic.searchQuery,
+                        purpose: subTopic.reason,
+                        status: 'pending',
+                    };
+
+                    try {
+                        const childReport = await childAgent.research(childStep, {
+                            expandSources: this.expandSourcesByDefault,
+                            onStatus: (status) => reportStatus(`  [Child] ${status}`),
+                        });
+
+                        // Append child findings to this step's summary
+                        summary += `\n\n---\n\n### Sub-Research: ${subTopic.question}\n\n${childReport.summary}`;
+                        keyInsights.push(...childReport.keyInsights);
+                        searchResults.push(...childReport.sources);
+                    } catch {
+                        // Child research failed - continue without it
+                        reportStatus(`  [Child] Sub-research failed, continuing...`);
+                    }
+                }
+            }
+        }
 
         reportStatus('Complete');
         return {
@@ -262,7 +342,7 @@ export class SubResearchAgent {
             summary,
             sources: searchResults,
             expandedSources: expandedSources.length > 0 ? expandedSources : undefined,
-            keyInsights,
+            keyInsights: keyInsights.slice(0, 10), // Cap insights after combining with child insights
         };
     }
 
@@ -420,6 +500,57 @@ export class SubResearchAgent {
         }
 
         return insights.slice(0, 5);
+    }
+
+    /**
+     * Identify sub-topics that would benefit from dedicated recursive research
+     */
+    private async identifySubTopics(
+        step: ResearchStep,
+        summary: string,
+        sources: ExaSearchResult[]
+    ): Promise<Array<{ question: string; searchQuery: string; reason: string }>> {
+        // Don't recurse if we're already at max depth
+        if (this.currentDepth >= this.maxRecursionDepth) {
+            return [];
+        }
+
+        try {
+            const sourceList = sources
+                .slice(0, 6)
+                .map((s, i) => `${i + 1}. ${s.title} - ${s.summary || s.highlights?.[0] || ''}`.slice(0, 200))
+                .join('\n');
+
+            const messages: Message[] = [
+                { role: 'system', content: SUB_TOPIC_IDENTIFICATION_PROMPT },
+                {
+                    role: 'user',
+                    content: `Research Question: ${step.question}\n\nCurrent Summary:\n${summary.slice(0, 1500)}\n\nSources Found:\n${sourceList}`,
+                },
+            ];
+
+            const response = await this.chatClient.chat(this.model, messages, { temperature: 0.3 });
+            const content = response.choices[0]?.message?.content?.trim() || '';
+
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (Array.isArray(parsed.subTopics)) {
+                    return parsed.subTopics
+                        .filter((t: any) => t && typeof t.question === 'string' && t.question.trim())
+                        .slice(0, 2) // Max 2 sub-topics per level
+                        .map((t: any) => ({
+                            question: t.question.trim(),
+                            searchQuery: t.searchQuery?.trim() || t.question.trim(),
+                            reason: t.reason?.trim() || 'Needs deeper research',
+                        }));
+                }
+            }
+
+            return [];
+        } catch {
+            return [];
+        }
     }
 }
 
