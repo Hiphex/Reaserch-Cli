@@ -98,6 +98,7 @@ program
     .option('--reasoning <mode>', 'Reasoning output: auto | on | off')
     .option('--dry-run', 'Show research plan and cost estimate without executing')
     .option('--estimate', 'Show detailed cost estimate before proceeding')
+    .option('--max-depth <n>', 'Max recursion depth for sub-agent research (default: 2)', (v) => parseInt(v, 10))
     .option('-o, --output <file>', 'Save report to file')
     .action(async (query: string | undefined, options: {
         model?: string;
@@ -106,6 +107,7 @@ program
         reasoning?: string;
         dryRun?: boolean;
         estimate?: boolean;
+        maxDepth?: number;
         output?: string;
     }) => {
         try {
@@ -133,6 +135,11 @@ program
                     : config.showReasoning;
             process.env.SHOW_REASONING = showReasoning ? '1' : '0';
             process.env.SHOW_TOOL_CALLS = config.showToolCalls ? '1' : '0';
+
+            // Set max recursion depth if provided
+            if (typeof options.maxDepth === 'number') {
+                process.env.SUBAGENT_MAX_RECURSION_DEPTH = String(options.maxDepth);
+            }
 
             const { DeepResearchAgent } = await import('./agent/interactive/index.js');
             const agent = new DeepResearchAgent(config, model);

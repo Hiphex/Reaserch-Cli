@@ -7,8 +7,9 @@ import { Config, DEFAULTS } from '../../config.js';
 import { OpenRouterClient, ChatOptions } from '../../clients/openrouter.js';
 import { OpenRouterResponsesClient, Annotation, StreamEvent } from '../../clients/responses.js';
 import { ExaClient } from '../../clients/exa.js';
-import { ResearchPlanner } from '../../research/planner.js';
+import { ResearchPlanner, type ResearchPlan } from '../../research/planner.js';
 import { runParallelResearch, SubAgentReport, AgentStatus } from '../sub-agent.js';
+import { FactChecker } from '../fact-checker.js';
 import { ReasoningSummarizer, SUMMARIZER_MODEL_ID } from '../../clients/summarizer.js';
 import { envPositiveInt, envNonNegativeInt, envBool, envIntOrInfinity } from '../../utils/env.js';
 import { estimateCost, CostBreakdown } from '../../utils/cost-estimator.js';
@@ -81,16 +82,15 @@ export class AgentCoordinator {
     }
 
     /**
-     * Run a deep research report
+     * Create a research plan from a topic (Phase 1: Planning)
+     * Returns the plan for user review/editing before execution
      */
-    async runDeepResearch(
+    async createResearchPlan(
         topic: string,
-        callbacks: AgentCallbacks = {},
-        options: { dryRun?: boolean } = {}
-    ): Promise<DeepResearchResult> {
+        callbacks: AgentCallbacks = {}
+    ): Promise<{ plan: ResearchPlan; summarizer: ReasoningSummarizer }> {
         const modelOptions = this.getModelChatOptions();
 
-        // 1. Plan
         callbacks.onStatusUpdate?.('Planning research...');
         const summarizer = new ReasoningSummarizer(this.chatClient);
         const planner = new ResearchPlanner(this.chatClient, this.model, modelOptions);
@@ -105,7 +105,22 @@ export class AgentCoordinator {
         if (finalPlanThought) callbacks.onReasoning?.(finalPlanThought);
         summarizer.reset();
 
-        // Cost estimation
+        return { plan, summarizer };
+    }
+
+    /**
+     * Execute a research plan (Phase 2: Execution + Synthesis)
+     * Accepts a (potentially user-edited) plan
+     */
+    async executeResearchPlan(
+        plan: ResearchPlan,
+        callbacks: AgentCallbacks = {},
+        options: { dryRun?: boolean; summarizer?: ReasoningSummarizer } = {}
+    ): Promise<DeepResearchResult> {
+        const modelOptions = this.getModelChatOptions();
+        const summarizer = options.summarizer ?? new ReasoningSummarizer(this.chatClient);
+
+        // Cost estimation for dry run
         if (options.dryRun) {
             const models = await this.chatClient.listModels();
             const mainModel = models.find(m => m.id === this.model);
@@ -119,7 +134,7 @@ export class AgentCoordinator {
             return { markdown: 'Dry run complete', reportTopics: [], costEstimate };
         }
 
-        // 2. Execute
+        // Execute research steps
         callbacks.onStatusUpdate?.('Executing research steps...');
 
         const subAgentNumResults = envPositiveInt(process.env.SUBAGENT_NUM_RESULTS, this.config.exaNumResults);
@@ -196,20 +211,12 @@ export class AgentCoordinator {
             gaps.forEach(g => executedQueries.add(normalizeQueryKey(g.searchQuery!)));
             callbacks.onStatusUpdate?.(`Found ${gaps.length} gaps. Researching...`);
 
-            // Note: In interactive mode, the UI handles visual list expansion. 
-            // Here we assume the callbacks handles displaying the new steps if receiving updated statuses.
-            // We pass the new/total list of statuses via onSubAgentStatus if properly implemented in caller, 
-            // but for now runParallelResearch handles its own batch.
-
             const additionalReports = await runParallelResearch(
                 gaps,
                 this.chatClient,
                 this.exaClient,
                 {
                     onStatusUpdate: (statuses) => {
-                        // This only gives status for the CURRENT batch
-                        // Coordinator user might want strictly cumulative status? 
-                        // For now we pass through batch status.
                         callbacks.onSubAgentStatus?.(statuses);
                     }
                 },
@@ -230,7 +237,7 @@ export class AgentCoordinator {
             additionalRounds++;
         }
 
-        // 3. Synthesize
+        // Synthesize report
         callbacks.onStatusUpdate?.('Synthesizing report...');
 
         const synthesisContext = this.buildSynthesisContext(plan.mainQuestion, allReports);
@@ -266,7 +273,32 @@ export class AgentCoordinator {
             report = response.choices[0]?.message?.content || '';
         }
 
+        // Verification pass: fact-check claims against sources
+        callbacks.onStatusUpdate?.('Verifying claims against sources...');
+        const allSources = allReports.flatMap(r => [...r.sources, ...(r.expandedSources || [])]);
+        const factChecker = new FactChecker(this.chatClient);
+        const verification = await factChecker.verify(report, allSources);
+
+        // Append verification summary to report
+        if (verification.totalClaims > 0) {
+            const verificationMarkdown = factChecker.formatAsMarkdown(verification);
+            report += verificationMarkdown;
+        }
+
         return { markdown: report, reportTopics: allReports };
+    }
+
+    /**
+     * Run a deep research report (combines planning + execution)
+     * Kept for backwards compatibility; use createResearchPlan + executeResearchPlan for interactive editing
+     */
+    async runDeepResearch(
+        topic: string,
+        callbacks: AgentCallbacks = {},
+        options: { dryRun?: boolean } = {}
+    ): Promise<DeepResearchResult> {
+        const { plan, summarizer } = await this.createResearchPlan(topic, callbacks);
+        return this.executeResearchPlan(plan, callbacks, { ...options, summarizer });
     }
 
     /**
