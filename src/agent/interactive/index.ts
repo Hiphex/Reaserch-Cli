@@ -220,7 +220,7 @@ export class DeepResearchAgent {
             const newRender = renderBox(title, states);
             if (newRender !== lastRender) {
                 if (lastRender) {
-                    const lines = lastRender.split('\\n').length;
+                    const lines = lastRender.split('\n').length;
                     process.stdout.write(`\x1b[${lines}A\x1b[0J`);
                 }
                 console.log(newRender);

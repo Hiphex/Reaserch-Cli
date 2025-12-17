@@ -98,7 +98,11 @@ program
     .option('--reasoning <mode>', 'Reasoning output: auto | on | off')
     .option('--dry-run', 'Show research plan and cost estimate without executing')
     .option('--estimate', 'Show detailed cost estimate before proceeding')
-    .option('--max-depth <n>', 'Max recursion depth for sub-agent research (default: 2)', (v) => parseInt(v, 10))
+    .option('--max-depth <n>', 'Max recursion depth for sub-agent research (default: 2)', (v) => {
+        const parsed = parseInt(v, 10);
+        if (!Number.isFinite(parsed) || parsed < 0) return 2;
+        return parsed;
+    })
     .option('-o, --output <file>', 'Save report to file')
     .action(async (query: string | undefined, options: {
         model?: string;
