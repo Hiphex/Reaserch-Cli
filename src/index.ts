@@ -31,6 +31,7 @@ import {
 } from './ui/components.js';
 import { colors, icons } from './ui/theme.js';
 import { FOLLOW_UP_PROMPT } from './research/prompts.js';
+import packageJson from '../package.json' with { type: 'json' };
 
 // Graceful shutdown handling
 process.on('SIGINT', () => {
@@ -64,7 +65,7 @@ function maybeShowSetupIntro(errors: string[]): void {
 program
     .name('research')
     .description('Deep research CLI - AI-powered web research')
-    .version('1.0.0');
+    .version(packageJson.version);
 
 program
     .command('init')
