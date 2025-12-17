@@ -4,12 +4,12 @@
  */
 
 import { Config, DEFAULTS } from '../../config.js';
-import { OpenRouterClient, ChatOptions, Message } from '../../clients/openrouter.js';
+import { OpenRouterClient, ChatOptions } from '../../clients/openrouter.js';
 import { OpenRouterResponsesClient, Annotation, StreamEvent } from '../../clients/responses.js';
 import { ExaClient } from '../../clients/exa.js';
-import { ResearchPlanner, ResearchStep } from '../../research/planner.js';
+import { ResearchPlanner } from '../../research/planner.js';
 import { runParallelResearch, SubAgentReport, AgentStatus } from '../sub-agent.js';
-import { ReasoningSummarizer, SUMMARIZER_MODEL, SUMMARIZER_MODEL_ID } from '../../clients/summarizer.js';
+import { ReasoningSummarizer, SUMMARIZER_MODEL_ID } from '../../clients/summarizer.js';
 import { envPositiveInt, envNonNegativeInt, envBool, envIntOrInfinity } from '../../utils/env.js';
 import { estimateCost, CostBreakdown } from '../../utils/cost-estimator.js';
 
@@ -317,6 +317,7 @@ export class AgentCoordinator {
             return this.responsesClient.extractTextAndCitations(finalResponse);
         } catch (error) {
             // If web search fails, return empty result (allow fallback to reasoning only)
+            console.error('[WebSearch Error]', error);
             return { text: '', citations: [] };
         }
     }
@@ -395,7 +396,7 @@ export class AgentCoordinator {
                     ((finalResponse?.output?.find((o: any) => o.type === 'reasoning')?.summary as string[] | undefined) ?? undefined)
             };
 
-        } catch (e) {
+        } catch {
             // Fallback to standard chat
             const messages = [
                 { role: 'system' as const, content: 'You are a helpful research assistant. Provide comprehensive, well-structured answers.' },

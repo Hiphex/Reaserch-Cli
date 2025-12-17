@@ -16,8 +16,7 @@ import {
     showComplete,
 } from '../../ui/components.js';
 import { exportReport, formatChoices, getExtension, type ExportFormat } from '../../export/formats.js';
-import { SubAgentReport } from '../sub-agent.js';
-import { envBool, envPositiveInt } from '../../utils/env.js';
+import { envPositiveInt } from '../../utils/env.js';
 import { AgentState, ConversationTurn, ResearchResult } from './state.js';
 import { renderBox, renderInfoBox, visibleWidth, wrapText } from './ui.js';
 import { getBoxInnerWidth } from '../../ui/theme.js';
@@ -193,7 +192,6 @@ export class DeepResearchAgent {
         console.log(`${colors.muted('📋 Planning research...')}`);
 
         // State for UI management
-        let planSteps: any[] = []; // Will be populated when plan is ready
         let agentStates: AgentState[] = [];
         let lastRender = '';
 
