@@ -487,7 +487,9 @@ Respond ONLY with JSON.`;
                     gaps: Array.isArray(parsed.gaps) ? parsed.gaps.slice(0, maxGaps) : [],
                 };
             }
-        } catch { }
+        } catch (error) {
+            console.error('[GapAnalysis Error]', error);
+        }
 
         return { needsMore: false, gaps: [] };
     }
