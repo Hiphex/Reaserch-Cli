@@ -68,7 +68,8 @@
     "marked": "^11.1.1",
     "marked-terminal": "^6.2.0",
     "ora": "^8.0.1",
-    "string-width": "^7.2.0"
+    "string-width": "^7.2.0",
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/gradient-string": "^1.1.5",
