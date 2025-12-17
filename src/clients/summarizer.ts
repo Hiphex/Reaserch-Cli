@@ -1,12 +1,12 @@
 /**
  * Reasoning Summarizer - Uses a fast model to summarize reasoning tokens
- * Throttled to prevent spam: max 5 summaries, minimum 5 seconds between each
+ * No hardcoded limits by default - user can configure limits if needed
  */
 
 import { OpenRouterClient, type Message } from './openrouter.js';
 
 // Fast, cheap model for summarization
-const SUMMARIZER_MODEL = 'google/gemini-2.0-flash-001';
+export const SUMMARIZER_MODEL = 'google/gemini-2.0-flash-001';
 
 const SUMMARIZE_PROMPT = `You are a concise summarizer. Given a snippet of an AI's internal reasoning/thinking, summarize what it's doing RIGHT NOW in 5-10 words maximum. Be specific.
 
@@ -22,6 +22,17 @@ Rules:
 - No quotes, no bullets
 - No extra commentary`;
 
+export interface SummarizerOptions {
+    /** Number of characters to buffer before summarizing (default: 800) */
+    bufferThreshold?: number;
+    /** Max summaries per phase, undefined = unlimited (default: unlimited) */
+    maxSummaries?: number;
+    /** Minimum seconds between summaries, undefined = no limit (default: no limit) */
+    minGapSeconds?: number;
+    /** Max tokens for summary output, undefined = model default (default: model default) */
+    maxTokens?: number;
+}
+
 export class ReasoningSummarizer {
     private client: OpenRouterClient;
     private buffer: string = '';
@@ -29,21 +40,20 @@ export class ReasoningSummarizer {
     private bufferThreshold: number;
     private summaryCache: Set<string> = new Set();
 
-    // Throttling
+    // Throttling (all optional)
     private lastSummaryTime: number = 0;
     private summaryCount: number = 0;
-    private maxSummaries: number;
-    private minGapMs: number;
+    private maxSummaries?: number;
+    private minGapMs?: number;
+    private maxTokens?: number;
 
-    constructor(client: OpenRouterClient, options: {
-        bufferThreshold?: number;
-        maxSummaries?: number;
-        minGapSeconds?: number;
-    } = {}) {
+    constructor(client: OpenRouterClient, options: SummarizerOptions = {}) {
         this.client = client;
-        this.bufferThreshold = options.bufferThreshold ?? 800;  // Larger buffer
-        this.maxSummaries = options.maxSummaries ?? 5;          // Max 5 summaries per phase
-        this.minGapMs = (options.minGapSeconds ?? 5) * 1000;    // Min 5 seconds between
+        this.bufferThreshold = options.bufferThreshold ?? 800;
+        // No limits by default - user must explicitly set them
+        this.maxSummaries = options.maxSummaries;
+        this.minGapMs = options.minGapSeconds !== undefined ? options.minGapSeconds * 1000 : undefined;
+        this.maxTokens = options.maxTokens;
     }
 
     /**
@@ -53,8 +63,8 @@ export class ReasoningSummarizer {
     async addReasoning(text: string): Promise<string | null> {
         this.buffer += text;
 
-        // Check if we've hit max summaries
-        if (this.summaryCount >= this.maxSummaries) {
+        // Check if we've hit max summaries (only if limit is set)
+        if (this.maxSummaries !== undefined && this.summaryCount >= this.maxSummaries) {
             return null;
         }
 
@@ -63,17 +73,19 @@ export class ReasoningSummarizer {
             return null;
         }
 
-        // Check time-based throttle
-        const now = Date.now();
-        if (now - this.lastSummaryTime < this.minGapMs) {
-            return null;
+        // Check time-based throttle (only if limit is set)
+        if (this.minGapMs !== undefined) {
+            const now = Date.now();
+            if (now - this.lastSummaryTime < this.minGapMs) {
+                return null;
+            }
         }
 
         const summary = await this.summarizeBuffer();
-        this.buffer = this.buffer.slice(-200); // Keep more context
+        this.buffer = this.buffer.slice(-200); // Keep some context
 
         if (summary) {
-            this.lastSummaryTime = now;
+            this.lastSummaryTime = Date.now();
             this.summaryCount++;
         }
 
@@ -92,11 +104,17 @@ export class ReasoningSummarizer {
                 { role: 'user', content: this.buffer.slice(-1200) },
             ];
 
-            const response = await this.client.chat(SUMMARIZER_MODEL, messages, {
-                maxTokens: 30,
+            const chatOptions: { temperature: number; stop: string[]; maxTokens?: number } = {
                 temperature: 0.3,
                 stop: ['\n'],
-            });
+            };
+
+            // Only set maxTokens if user specified it
+            if (this.maxTokens !== undefined) {
+                chatOptions.maxTokens = this.maxTokens;
+            }
+
+            const response = await this.client.chat(SUMMARIZER_MODEL, messages, chatOptions);
 
             const summary = response.choices[0]?.message?.content?.trim();
 
@@ -122,10 +140,11 @@ export class ReasoningSummarizer {
     }
 
     /**
-     * Flush any remaining buffer (only if under max and gap allows)
+     * Flush any remaining buffer
      */
     async flush(): Promise<string | null> {
-        if (this.summaryCount >= this.maxSummaries) {
+        // Check max summaries limit if set
+        if (this.maxSummaries !== undefined && this.summaryCount >= this.maxSummaries) {
             this.buffer = '';
             return null;
         }
