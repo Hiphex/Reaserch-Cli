@@ -165,11 +165,11 @@ export class SubResearchAgent {
             ? options.maxTotalSourceChars
             : envIntOrInfinity(process.env.SUBAGENT_MAX_TOTAL_SOURCE_CHARS, 65_000);
 
-        // Recursion depth control
+        // Recursion depth control (0 disables recursive research)
         this.currentDepth = typeof options.depth === 'number' ? options.depth : 0;
         const rawMaxDepth = typeof options.maxRecursionDepth === 'number'
             ? options.maxRecursionDepth
-            : envPositiveInt(process.env.SUBAGENT_MAX_RECURSION_DEPTH, DEFAULT_MAX_RECURSION_DEPTH);
+            : envNonNegativeInt(process.env.SUBAGENT_MAX_RECURSION_DEPTH, DEFAULT_MAX_RECURSION_DEPTH);
         this.maxRecursionDepth = Math.min(Math.max(0, rawMaxDepth), HARD_MAX_RECURSION_DEPTH);
     }
 
