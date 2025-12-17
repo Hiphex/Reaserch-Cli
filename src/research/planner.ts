@@ -128,7 +128,7 @@ export class ResearchPlanner {
             },
             // 3. Fix common issues: trailing commas, missing quotes
             () => {
-                let fixed = cleanContent
+                const fixed = cleanContent
                     .replace(/,\s*([}\]])/g, '$1')  // Remove trailing commas
                     .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');  // Quote unquoted keys
                 const match = fixed.match(/\{[\s\S]*\}/);

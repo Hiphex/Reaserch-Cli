@@ -19,10 +19,13 @@ export class ResearchExecutor {
     private numResults: number;
     private followUpNumResults: number;
 
-    constructor(exaClient: ExaClient) {
+    constructor(
+        exaClient: ExaClient,
+        options: { numResults?: number; followUpNumResults?: number } = {}
+    ) {
         this.exaClient = exaClient;
-        this.numResults = envPositiveInt(process.env.EXA_NUM_RESULTS, 8);
-        this.followUpNumResults = envPositiveInt(process.env.EXA_FOLLOWUP_NUM_RESULTS, 5);
+        this.numResults = options.numResults ?? envPositiveInt(process.env.EXA_NUM_RESULTS, 8);
+        this.followUpNumResults = options.followUpNumResults ?? envPositiveInt(process.env.EXA_FOLLOWUP_NUM_RESULTS, 5);
     }
 
     /**
