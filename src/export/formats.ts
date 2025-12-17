@@ -118,7 +118,7 @@ ${htmlContent}
  */
 async function exportPlainText(content: string, outputPath: string): Promise<void> {
     // Simple markdown stripping
-    let plainText = content
+    const plainText = content
         // Remove headers markers
         .replace(/^#{1,6}\s+/gm, '')
         // Remove bold/italic

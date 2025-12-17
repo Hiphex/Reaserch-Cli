@@ -3,7 +3,7 @@
  */
 
 import { OpenRouterClient, type Message, type ChatOptions } from '../clients/openrouter.js';
-import { ExaClient, type ExaSearchResult, type ExaSearchResponse } from '../clients/exa.js';
+import { ExaClient, type ExaSearchResult } from '../clients/exa.js';
 import type { ResearchStep } from '../research/planner.js';
 import { envBool, envIntOrInfinity, envNonNegativeInt, envPositiveInt } from '../utils/env.js';
 

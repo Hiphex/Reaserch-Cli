@@ -4,41 +4,30 @@
  */
 
 import inquirer from 'inquirer';
-import { OpenRouterResponsesClient, type Annotation, type StreamEvent } from '../clients/responses.js';
-import { OpenRouterClient, type ChatOptions } from '../clients/openrouter.js';
-import { ExaClient } from '../clients/exa.js';
-import { ResearchPlanner } from '../research/planner.js';
-import { ResearchExecutor } from '../research/executor.js';
-import { ResearchSynthesizer } from '../research/synthesizer.js';
-import { FOLLOW_UP_PROMPT } from '../research/prompts.js';
-import { ensureConfig, writeEnvVars, type Config } from '../config.js';
-import { colors, divider, getBoxInnerWidth, icons } from '../ui/theme.js';
+import { OpenRouterResponsesClient, type Annotation, type StreamEvent } from '../../clients/responses.js';
+import { OpenRouterClient, type ChatOptions } from '../../clients/openrouter.js';
+import { ExaClient } from '../../clients/exa.js';
+import { ResearchPlanner } from '../../research/planner.js';
+import { ensureConfig, writeEnvVars, type Config, DEFAULTS } from '../../config.js';
+import { colors, divider, icons } from '../../ui/theme.js';
 import {
     createSpinner,
     renderMarkdown,
     showHeader,
     showError,
-    showProgressTree,
     showResearchPlan,
     showSynthesisHeader,
-    streamOutput,
-} from '../ui/components.js';
-import { exportReport, formatChoices, getExtension, type ExportFormat } from '../export/formats.js';
-import { runParallelResearch, type SubAgentReport } from './sub-agent.js';
-import { ReasoningSummarizer } from '../clients/summarizer.js';
-import { envBool, envIntOrInfinity, envNonNegativeInt, envPositiveInt } from '../utils/env.js';
-import stringWidth from 'string-width';
-
-export interface ResearchResult {
-    text: string;
-    sources: string[];
-    reasoning?: string[];
-}
-
-interface ConversationTurn {
-    query: string;
-    result: ResearchResult;
-}
+    showComplete,
+} from '../../ui/components.js';
+import { exportReport, formatChoices, getExtension, type ExportFormat } from '../../export/formats.js';
+import { runParallelResearch, type SubAgentReport } from '../sub-agent.js';
+import { ReasoningSummarizer } from '../../clients/summarizer.js';
+import { envBool, envIntOrInfinity, envNonNegativeInt, envPositiveInt } from '../../utils/env.js';
+import { AgentState, ConversationTurn, ResearchResult } from './state.js';
+import { renderBox, renderInfoBox, visibleWidth, wrapText } from './ui.js';
+import { getBoxInnerWidth } from '../../ui/theme.js';
+import { estimateCost, formatCostBreakdown, SUMMARIZER_MODEL_ID } from '../../utils/cost-estimator.js';
+import { writeFile } from 'fs/promises';
 
 export class DeepResearchAgent {
     private responsesClient: OpenRouterResponsesClient;
@@ -54,7 +43,7 @@ export class DeepResearchAgent {
     constructor(config: Config, model?: string) {
         this.config = config;
         this.apiKey = config.openrouterApiKey;
-        this.model = model || config.defaultModel || 'moonshotai/kimi-k2-thinking';
+        this.model = model || config.defaultModel || DEFAULTS.model;
         this.responsesClient = new OpenRouterResponsesClient(this.apiKey);
         this.chatClient = new OpenRouterClient(this.apiKey);
     }
@@ -547,7 +536,7 @@ export class DeepResearchAgent {
         const models = await this.chatClient.listModels();
         spinner.stop();
 
-        const { selectModelQuick } = await import('../ui/model-selector.js');
+        const { selectModelQuick } = await import('../../ui/model-selector.js');
         const selected = await selectModelQuick(models, { currentModel: this.model, showDetails: true });
         this.model = selected.id;
 
@@ -642,11 +631,11 @@ export class DeepResearchAgent {
                 }
             }
 
-	            if (!finalResponse) {
-	                const fallback = await this.responsesClient.searchWeb(this.model, query, maxResults);
-	                spinner.succeed(colors.success(fallback.citations.length > 0 ? `Web: ${fallback.citations.length} sources` : 'Web search complete'));
-	                return fallback;
-	            }
+            if (!finalResponse) {
+                const fallback = await this.responsesClient.searchWeb(this.model, query, maxResults);
+                spinner.succeed(colors.success(fallback.citations.length > 0 ? `Web: ${fallback.citations.length} sources` : 'Web search complete'));
+                return fallback;
+            }
 
             const extracted = this.responsesClient.extractTextAndCitations(finalResponse);
             if (!receivedAnyText && extracted.text.trim().length === 0) {
@@ -793,7 +782,7 @@ export class DeepResearchAgent {
                     ((finalResponse?.output?.find((o: any) => o.type === 'reasoning')?.summary as string[] | undefined) ??
                         undefined),
             };
-        } catch (error) {
+        } catch {
             // Fallback to regular chat for non-reasoning models
             spinner.text = 'Answer: generating…';
 
@@ -901,7 +890,7 @@ export class DeepResearchAgent {
         if (wasSpinning) spinner.start();
     }
 
-    private async runDeepReport(query: string): Promise<void> {
+    public async runDeepReport(query: string, options: { dryRun?: boolean; output?: string } = {}): Promise<void> {
         this.lastQuery = query;
         const updated = await ensureConfig({ exa: true, openrouter: true });
 
@@ -948,102 +937,29 @@ export class DeepResearchAgent {
 
         showResearchPlan(plan);
 
+        // Cost estimation (if dry-run or requested via interactive command in future)
+        if (options.dryRun) {
+            const models = await this.chatClient.listModels();
+            const mainModel = models.find(m => m.id === this.model);
+            const summarizerModel = models.find(m => m.id === SUMMARIZER_MODEL_ID);
+
+            const costEstimate = estimateCost(mainModel, summarizerModel, {
+                numSteps: plan.steps.length,
+                numFollowUps: this.config.autoFollowup ? 2 : 0, // estimate for a couple rounds
+            });
+
+            console.log();
+            console.log(colors.primary('Cost Estimate'));
+            console.log(colors.muted(formatCostBreakdown(costEstimate)));
+            console.log();
+            console.log(colors.muted('Dry run complete. No searches executed.'));
+            return;
+        }
+
         // Phase 2: Parallel sub-agent research with in-place status updates
         console.log();
 
-        const boxWidth = getBoxInnerWidth();
-
-        const stripAnsi = (input: string): string => input.replace(/\x1b\[[0-9;]*m/g, '');
-        const visibleWidth = (input: string): number => stringWidth(stripAnsi(input));
-
-        const truncateText = (input: string, maxWidth: number): string => {
-            const text = String(input ?? '');
-            if (maxWidth <= 0) return '';
-            if (visibleWidth(text) <= maxWidth) return text;
-            if (maxWidth === 1) return '…';
-
-            const target = maxWidth - 1;
-            let out = '';
-            for (const ch of text) {
-                const next = out + ch;
-                if (visibleWidth(next) > target) break;
-                out = next;
-            }
-            return out + '…';
-        };
-
-        const wrapText = (input: string, maxWidth: number): string[] => {
-            const text = String(input ?? '')
-                .replace(/\s+/g, ' ')
-                .trim();
-            if (!text) return [''];
-            if (maxWidth <= 0) return [''];
-            if (visibleWidth(text) <= maxWidth) return [text];
-
-            const words = text.split(' ').filter(Boolean);
-            const lines: string[] = [];
-            let current = '';
-
-            for (const word of words) {
-                const candidate = current ? `${current} ${word}` : word;
-                if (visibleWidth(candidate) <= maxWidth) {
-                    current = candidate;
-                    continue;
-                }
-
-                if (current) {
-                    lines.push(current);
-                    current = '';
-                }
-
-                if (visibleWidth(word) <= maxWidth) {
-                    current = word;
-                    continue;
-                }
-
-                lines.push(truncateText(word, maxWidth));
-            }
-
-            if (current) lines.push(current);
-            return lines.length > 0 ? lines : [''];
-        };
-
-        const renderInfoBox = (title: string, bodyLines: string[]): string => {
-            const lines: string[] = [];
-            const titleText = ` ${title} `;
-            const headerInnerRaw = `─${titleText}`;
-            let headerInner = headerInnerRaw;
-            let headerW = visibleWidth(headerInner);
-            if (headerW > boxWidth) {
-                headerInner = truncateText(stripAnsi(headerInnerRaw), boxWidth);
-                headerW = visibleWidth(headerInner);
-            }
-            if (headerW < boxWidth) {
-                headerInner = headerInner + '─'.repeat(boxWidth - headerW);
-            }
-
-            lines.push(colors.muted(`╭${headerInner}╮`));
-            lines.push(colors.muted(`│${' '.repeat(boxWidth)}│`));
-
-            bodyLines.forEach((line) => {
-                const safe = truncateText(line, boxWidth);
-                const pad = Math.max(0, boxWidth - visibleWidth(safe));
-                lines.push(colors.muted('│') + safe + ' '.repeat(pad) + colors.muted('│'));
-            });
-
-            lines.push(colors.muted(`│${' '.repeat(boxWidth)}│`));
-            lines.push(colors.muted(`╰${'─'.repeat(boxWidth)}╯`));
-            return lines.join('\n');
-        };
-
         // Agent status tracking
-        interface AgentState {
-            question: string;
-            status: string;
-            sources: number;
-            complete: boolean;
-            failed: boolean;
-        }
         const agentStates: AgentState[] = plan.steps.map(step => ({
             question: step.question,
             status: 'Waiting...',
@@ -1052,67 +968,12 @@ export class DeepResearchAgent {
             failed: false,
         }));
 
-        // Render the full box
-        const renderBox = (title: string, states: AgentState[]) => {
-            const lines: string[] = [];
-            const completedCount = states.filter(s => s.complete).length;
-            const titleText = ` ${title} (${completedCount}/${states.length} complete) `;
-            const headerInnerRaw = `─${titleText}`;
-            const headerInner = headerInnerRaw.length >= boxWidth
-                ? headerInnerRaw.slice(0, boxWidth)
-                : headerInnerRaw + '─'.repeat(boxWidth - headerInnerRaw.length);
-
-            lines.push(colors.muted(`╭${headerInner}╮`));
-            lines.push(colors.muted(`│${' '.repeat(boxWidth)}│`));
-
-            states.forEach((s, i) => {
-                const isFailed = s.failed;
-                const iconChar = isFailed ? '✗' : s.complete ? '✓' : '◐';
-                const icon = isFailed
-                    ? colors.error(iconChar)
-                    : s.complete
-                        ? colors.success(iconChar)
-                        : colors.warning(iconChar);
-                const num = `${i + 1}.`;
-                const statusRaw = isFailed ? s.status : s.complete ? `(${s.sources} sources)` : s.status;
-
-                const prefixPlain = `  ${iconChar} ${num} `;
-                const prefixStyled = `  ${icon} ${num} `;
-
-                const available = Math.max(0, boxWidth - visibleWidth(prefixPlain));
-                const gapMin = Math.min(2, available);
-
-                const statusMax = Math.min(40, Math.max(0, available - gapMin));
-                const statusInfo = truncateText(statusRaw, statusMax);
-
-                const statusW = visibleWidth(statusInfo);
-                const questionMax = Math.max(0, available - gapMin - statusW);
-                const q = truncateText(s.question, questionMax);
-
-                const qW = visibleWidth(q);
-                const gapLen = available - qW - statusW;
-                const gap = ' '.repeat(Math.max(gapMin, gapLen));
-
-                const statusStyle = isFailed ? colors.error : colors.muted;
-                const content = `${prefixStyled}${q}${gap}${statusStyle(statusInfo)}`;
-                const pad = Math.max(0, boxWidth - visibleWidth(content));
-
-                lines.push(colors.muted('│') + content + ' '.repeat(pad) + colors.muted('│'));
-            });
-
-            lines.push(colors.muted(`│${' '.repeat(boxWidth)}│`));
-            lines.push(colors.muted(`╰${'─'.repeat(boxWidth)}╯`));
-
-            return lines.join('\n');
-        };
-
-        // Initial render
+        // Re-implementing the cursor logic locally here for now as it needs state
         let lastRender = '';
-        const updateBox = (title: string, states: AgentState[]) => {
+        const updateBoxWithCursor = (title: string, states: AgentState[]) => {
             const newRender = renderBox(title, states);
             if (newRender !== lastRender) {
                 if (lastRender) {
-                    // Move cursor up and clear
                     const lines = lastRender.split('\n').length;
                     process.stdout.write(`\x1b[${lines}A\x1b[0J`);
                 }
@@ -1122,9 +983,9 @@ export class DeepResearchAgent {
         };
 
         // Initial box
-        updateBox('Sub-Agents Researching', agentStates);
+        updateBoxWithCursor('Sub-Agents Researching', agentStates);
 
-        const subAgentNumResults = envPositiveInt(process.env.SUBAGENT_NUM_RESULTS, 10);
+        const subAgentNumResults = envPositiveInt(process.env.SUBAGENT_NUM_RESULTS, this.config.exaNumResults);
         const subAgentExpansionCandidates = envPositiveInt(process.env.SUBAGENT_EXPANSION_CANDIDATES, 8);
         const subAgentMaxExpandedUrls = envNonNegativeInt(process.env.SUBAGENT_MAX_EXPANDED_URLS, 5);
         const subAgentExpandSources = envBool(process.env.SUBAGENT_EXPAND_SOURCES, true) && subAgentMaxExpandedUrls > 0;
@@ -1146,7 +1007,7 @@ export class DeepResearchAgent {
                         agentStates[s.index].sources = s.sources;
                         agentStates[s.index].failed = s.failed;
                     });
-                    updateBox('Sub-Agents Researching', agentStates);
+                    updateBoxWithCursor('Sub-Agents Researching', agentStates);
                 },
                 onProgress: () => { },
             },
@@ -1168,7 +1029,7 @@ export class DeepResearchAgent {
             agentStates[i].sources = report.sources.length + (report.expandedSources?.length || 0);
             agentStates[i].complete = true;
         });
-        updateBox('Sub-Agents Researching', agentStates);
+        updateBoxWithCursor('Sub-Agents Researching', agentStates);
 
         // Final summary
         const totalSources = subAgentReports.reduce((sum, r) => sum + r.sources.length + (r.expandedSources?.length || 0), 0);
@@ -1184,7 +1045,9 @@ export class DeepResearchAgent {
             if (key) executedQueries.add(key);
         });
         let additionalRounds = 0;
-        const maxAdditionalRounds = envIntOrInfinity(process.env.AGENT_MAX_ADDITIONAL_ROUNDS, 4);
+        const maxAdditionalRounds = this.config.maxFollowupSteps;
+
+        const boxWidth = getBoxInnerWidth();
 
         while (additionalRounds < maxAdditionalRounds) {
             console.log();
@@ -1270,7 +1133,7 @@ export class DeepResearchAgent {
 
             // Reset lastRender for new box
             lastRender = '';
-            updateBox('Additional Research', additionalStates);
+            updateBoxWithCursor('Additional Research', additionalStates);
 
             const additionalReports = await runParallelResearch(
                 gapSteps,
@@ -1284,7 +1147,7 @@ export class DeepResearchAgent {
                             additionalStates[s.index].sources = s.sources;
                             additionalStates[s.index].failed = s.failed;
                         });
-                        updateBox('Additional Research', additionalStates);
+                        updateBoxWithCursor('Additional Research', additionalStates);
                     },
                     onProgress: () => { },
                 },
@@ -1306,7 +1169,7 @@ export class DeepResearchAgent {
                 additionalStates[i].sources = report.sources.length + (report.expandedSources?.length || 0);
                 additionalStates[i].complete = true;
             });
-            updateBox('Additional Research', additionalStates);
+            updateBoxWithCursor('Additional Research', additionalStates);
 
             allReports = [...allReports, ...additionalReports];
             additionalRounds++;
@@ -1325,19 +1188,19 @@ export class DeepResearchAgent {
         // Build context from all reports (including additional research)
         const synthesisContext = this.buildSynthesisContext(plan.mainQuestion, allReports);
 
+        const synthMessages = [
+            { role: 'system' as const, content: this.getSynthesisPrompt() },
+            { role: 'user' as const, content: synthesisContext },
+        ];
+
         if (shouldStream) {
-            console.log();
-            console.log(`${colors.muted('✍️  Writing report...')}`);
-
-            const synthMessages = [
-                { role: 'system' as const, content: this.getSynthesisPrompt() },
-                { role: 'user' as const, content: synthesisContext },
-            ];
-
-            for await (const event of this.chatClient.chatStreamWithReasoning(this.model, synthMessages, {
+            // Stream the synthesis
+            const result = await this.chatClient.chatStreamWithReasoning(this.model, synthMessages, {
                 ...modelOptions,
                 includeReasoning: true,
-            })) {
+            });
+
+            for await (const event of result) {
                 if (event.type === 'reasoning') {
                     const summary = await summarizer.addReasoning(event.text);
                     if (summary) {
@@ -1358,24 +1221,27 @@ export class DeepResearchAgent {
                     report += event.text;
                 }
             }
-
-            if (!report.endsWith('\n')) process.stdout.write('\n');
+            // Add newline after stream
+            console.log();
         } else {
-            const synthSpinner = createSpinner('Writing report (LLM)...');
+            const synthSpinner = createSpinner('Generating report...');
             synthSpinner.start();
-
-            const response = await this.chatClient.chat(this.model, [
-                { role: 'system', content: this.getSynthesisPrompt() },
-                { role: 'user', content: synthesisContext },
-            ], { ...modelOptions });
-
+            const response = await this.chatClient.chat(this.model, synthMessages, modelOptions);
             report = response.choices[0]?.message?.content || '';
             synthSpinner.stop();
-
-            const shouldRender = this.config.renderMarkdown && process.env.RENDER_MARKDOWN !== '0';
-            console.log(shouldRender ? renderMarkdown(report) : report);
+            console.log(renderMarkdown(report));
         }
 
+        // Save to file if requested
+        if (options.output) {
+            await writeFile(options.output, report, 'utf-8');
+            showComplete(options.output);
+        } else {
+            // only show "Complete" if running in one-shot mode, otherwise we return to prompt
+            if (options.output) showComplete(); // handled above
+        }
+
+        this.lastReport = { topic: query, markdown: report };
         // Collect all sources (including additional research)
         const sources = [
             ...new Set(
@@ -1529,7 +1395,7 @@ Respond ONLY with JSON.`;
                     gaps: Array.isArray(parsed.gaps) ? parsed.gaps.slice(0, maxGaps) : [],
                 };
             }
-        } catch (error) {
+        } catch {
             // If evaluation fails, proceed with synthesis
         }
 

@@ -5,6 +5,8 @@
 import { readFile, writeFile } from 'fs/promises';
 import path from 'path';
 
+import { ConfigError } from './errors.js';
+
 export type UiMode = 'minimal' | 'fancy' | 'plain';
 export type PreferencesMode = 'basic' | 'advanced';
 export type ReasoningEffort = 'low' | 'medium' | 'high';
@@ -24,6 +26,7 @@ export const DEFAULTS = {
     streamOutput: true,
     exaNumResults: 8,
     exaFollowupNumResults: 5,
+    maxFollowupSteps: 20,
 } as const;
 
 export interface Config {
@@ -43,8 +46,10 @@ export interface Config {
     showReasoning: boolean;
     showToolCalls: boolean;
     autoFollowup: boolean;
-    maxFollowupSteps?: number;
+    maxFollowupSteps: number;
     streamOutput: boolean;
+    exaNumResults: number;
+    exaFollowupNumResults: number;
 }
 
 function envBool(value: string | undefined, defaultValue: boolean): boolean {
@@ -65,6 +70,12 @@ function envOptionalInt(value: string | undefined): number | undefined {
     const parsed = envOptionalNumber(value);
     if (parsed === undefined) return undefined;
     return Math.trunc(parsed);
+}
+
+
+function envPositiveInt(value: string | undefined, defaultValue: number): number {
+    const parsed = envOptionalInt(value);
+    return parsed !== undefined && parsed > 0 ? parsed : defaultValue;
 }
 
 function envReasoningEffort(value: string | undefined, defaultValue: ReasoningEffort): ReasoningEffort {
@@ -100,8 +111,10 @@ export function loadConfig(): Config {
     const showReasoning = envBool(process.env.SHOW_REASONING, DEFAULTS.showReasoning);
     const showToolCalls = envBool(process.env.SHOW_TOOL_CALLS, DEFAULTS.showToolCalls);
     const autoFollowup = envBool(process.env.AUTO_FOLLOWUP, DEFAULTS.autoFollowup);
-    const maxFollowupSteps = envOptionalInt(process.env.MAX_FOLLOWUP_STEPS);
+    const maxFollowupSteps = envPositiveInt(process.env.MAX_FOLLOWUP_STEPS, DEFAULTS.maxFollowupSteps);
     const streamOutput = envBool(process.env.STREAM_OUTPUT, DEFAULTS.streamOutput);
+    const exaNumResults = envPositiveInt(process.env.EXA_NUM_RESULTS, DEFAULTS.exaNumResults);
+    const exaFollowupNumResults = envPositiveInt(process.env.EXA_FOLLOWUP_NUM_RESULTS, DEFAULTS.exaFollowupNumResults);
 
     return {
         exaApiKey,
@@ -122,6 +135,8 @@ export function loadConfig(): Config {
         autoFollowup,
         maxFollowupSteps,
         streamOutput,
+        exaNumResults,
+        exaFollowupNumResults,
     };
 }
 
@@ -229,7 +244,7 @@ export async function ensureConfig(
     if (!shouldPrompt) return current;
 
     if (!canPrompt && missingRequired) {
-        throw new Error(`Missing configuration:\n${validation.errors.map(e => `  • ${e}`).join('\n')}`);
+        throw new ConfigError(`Missing configuration:\n${validation.errors.map(e => `  • ${e}`).join('\n')}`);
     }
 
     const inquirer = (await import('inquirer')).default;
